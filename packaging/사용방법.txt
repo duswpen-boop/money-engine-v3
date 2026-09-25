@@ -1,0 +1,15 @@
+MONEY ENGINE V3.0 사용 방법
+
+1. MoneyEngine-Windows.zip의 압축을 풀어 MoneyEngine-Windows 폴더를 꺼내주세요.
+2. 폴더 안의 MoneyEngine.exe를 더블클릭하세요.
+3. 준비가 끝나면 기본 브라우저가 자동으로 열립니다.
+4. 종료할 때는 SETTINGS > 프로그램 종료를 누르세요.
+
+Python, Node.js, pip 설치가 필요하지 않습니다.
+SQLite DB, 설정, 이미지는 MoneyEngine.exe 옆의 data 폴더에 저장됩니다.
+실행 로그는 MoneyEngine.exe 옆의 logs 폴더에 저장됩니다.
+업데이트할 때 data 폴더를 지우지 마세요.
+
+프로그램이 시작되지 않으면 표시되는 오류 창의 로그 경로를 확인해 주세요.
+PHASE 1에서는 소재 입력, 저장, 목록, 다시 열기까지 동작합니다.
+AI 조사와 이미지 생성은 다음 단계에서 연결됩니다.
