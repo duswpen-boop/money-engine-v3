@@ -6,6 +6,7 @@ import sqlite3
 import tempfile
 import unittest
 import zipfile
+from contextlib import closing
 from unittest.mock import patch
 from fastapi.testclient import TestClient
 
@@ -61,10 +62,10 @@ async def fake_fetch(client, url, title):
 class ResearchTest(unittest.TestCase):
     def test_existing_phase1_sources_table_is_migrated(self):
         with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {"MONEY_ENGINE_DB": os.path.join(temp, "old.sqlite")}, clear=False):
-            with sqlite3.connect(os.environ["MONEY_ENGINE_DB"]) as db:
+            with closing(sqlite3.connect(os.environ["MONEY_ENGINE_DB"])) as db:
                 db.execute("CREATE TABLE sources(id TEXT PRIMARY KEY, content_id TEXT, url TEXT, title TEXT, source_type TEXT, checked_at TEXT, verification_status TEXT)")
             init_db()
-            with sqlite3.connect(os.environ["MONEY_ENGINE_DB"]) as db:
+            with closing(sqlite3.connect(os.environ["MONEY_ENGINE_DB"])) as db:
                 columns = {row[1] for row in db.execute("PRAGMA table_info(sources)")}
                 self.assertTrue({"published_at", "source_rank", "document_type", "excerpt"} <= columns)
 

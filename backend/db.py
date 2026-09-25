@@ -17,9 +17,9 @@ def connection():
     path = database_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(path, timeout=10)
-    db.row_factory = sqlite3.Row
-    db.execute("PRAGMA foreign_keys = ON")
     try:
+        db.row_factory = sqlite3.Row
+        db.execute("PRAGMA foreign_keys = ON")
         yield db
         db.commit()
     except Exception:
