@@ -76,6 +76,12 @@ def get_content(content_id: str) -> dict | None:
         content["sources"] = [_dict(row) for row in db.execute(
             "SELECT * FROM sources WHERE content_id=? ORDER BY rowid", (content_id,)
         )]
+        research = _dict(db.execute("SELECT * FROM research_results WHERE content_id=?", (content_id,)).fetchone())
+        if research:
+            for key in ("parsed_json", "facts_json", "summary_json"):
+                research[key.removesuffix("_json")] = json.loads(research.pop(key))
+            research["conflict"] = bool(research["conflict"])
+        content["research"] = research
         for field in ("secondary_keywords", "watch_keywords", "tags"):
             content[field] = json.loads(content[field])
         return content
@@ -90,3 +96,66 @@ def list_contents(query: str = "") -> list[dict]:
             (f"%{query}%", f"%{query}%"),
         ).fetchall()
         return [_dict(row) for row in rows]
+
+
+def set_step(content_id: str, step: str, status: str, error: str | None = None):
+    timestamp = now()
+    with connection() as db:
+        run = db.execute("SELECT id FROM pipeline_runs WHERE content_id=? ORDER BY rowid DESC LIMIT 1", (content_id,)).fetchone()
+        if run is None:
+            raise ValueError("작업을 찾지 못했습니다.")
+        db.execute("UPDATE pipeline_steps SET status=?, error=?, updated_at=?, attempts=attempts+? WHERE run_id=? AND step=?",
+                   (status, error, timestamp, int(status == "RUNNING"), run["id"], step))
+        if status == "RUNNING":
+            db.execute("UPDATE pipeline_runs SET status='RUNNING',updated_at=? WHERE id=?", (timestamp, run["id"]))
+        elif status == "FAILED":
+            db.execute("UPDATE pipeline_runs SET status='FAILED',updated_at=? WHERE id=?", (timestamp, run["id"]))
+        elif step == "VERIFY" and status == "COMPLETED":
+            db.execute("UPDATE pipeline_runs SET status='COMPLETED',updated_at=? WHERE id=?", (timestamp, run["id"]))
+        db.execute("UPDATE contents SET updated_at=? WHERE id=?", (timestamp, content_id))
+
+
+def claim_research(content_id: str) -> bool:
+    with connection() as db:
+        run = db.execute("SELECT id,status FROM pipeline_runs WHERE content_id=? ORDER BY rowid DESC LIMIT 1", (content_id,)).fetchone()
+        if run is None or run["status"] == "RUNNING":
+            return False
+        db.execute("UPDATE pipeline_runs SET status='RUNNING', updated_at=? WHERE id=?", (now(), run["id"]))
+        return True
+
+
+def recover_research_runs():
+    with connection() as db:
+        db.execute("UPDATE pipeline_runs SET status='FAILED',updated_at=? WHERE status='RUNNING'", (now(),))
+        db.execute("UPDATE pipeline_steps SET status='FAILED',error='프로그램이 종료되어 조사가 중단됐습니다. 다시 시도하세요.', updated_at=? WHERE status='RUNNING'", (now(),))
+
+
+def save_parsed(content_id: str, parsed: dict):
+    with connection() as db:
+        db.execute("INSERT INTO research_results(content_id,parsed_json,updated_at) VALUES(?,?,?) "
+                   "ON CONFLICT(content_id) DO UPDATE SET parsed_json=excluded.parsed_json,updated_at=excluded.updated_at",
+                   (content_id, json.dumps(parsed, ensure_ascii=False), now()))
+
+
+def save_sources(content_id: str, sources: list[dict]):
+    with connection() as db:
+        db.execute("DELETE FROM sources WHERE content_id=?", (content_id,))
+        db.executemany(
+            "INSERT INTO sources(id,content_id,url,title,source_type,checked_at,verification_status,"
+            "published_at,source_rank,document_type,is_correction,extract_status,excerpt,issuer) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [(new_id(), content_id, doc["url"], doc.get("title"), doc.get("source_type"), now(),
+              "VERIFIED" if doc.get("extract_status") == "OK" else "UNKNOWN", doc.get("published_at"),
+              doc.get("source_rank"), doc.get("document_type"), int(doc.get("is_correction", False)),
+              doc.get("extract_status"), doc.get("excerpt", "")[:24000], doc.get("issuer")) for doc in sources],
+        )
+
+
+def save_verified(content_id: str, facts: dict, summary: dict, conflict: bool):
+    timestamp = now()
+    with connection() as db:
+        db.execute("UPDATE research_results SET facts_json=?,summary_json=?,conflict=?,updated_at=? WHERE content_id=?",
+                   (json.dumps(facts, ensure_ascii=False), json.dumps(summary, ensure_ascii=False), int(conflict), timestamp, content_id))
+        db.execute("UPDATE contents SET region=?,organization=?,program_name=?,updated_at=? WHERE id=?",
+                   (facts.get("region", {}).get("value"), facts.get("organization", {}).get("value"),
+                    facts.get("program_name", {}).get("value"), timestamp, content_id))

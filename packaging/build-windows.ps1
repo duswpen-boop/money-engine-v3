@@ -22,6 +22,8 @@ if (-not (Test-Path '.build-venv/Scripts/python.exe')) {
 $python = Join-Path (Get-Location) '.build-venv/Scripts/python.exe'
 & $python -m pip install -r backend/requirements.txt -r packaging/requirements-build.txt
 if ($LASTEXITCODE -ne 0) { throw 'Build dependencies failed' }
+& $python -m unittest discover -s tests -v
+if ($LASTEXITCODE -ne 0) { throw 'Project tests failed' }
 & $python -m PyInstaller MoneyEngine.spec --noconfirm --clean
 if ($LASTEXITCODE -ne 0) { throw 'PyInstaller failed' }
 

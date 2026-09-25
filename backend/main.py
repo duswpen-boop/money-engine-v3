@@ -7,12 +7,14 @@ from pydantic import BaseModel, Field
 from .credentials import delete_openai_key, has_openai_key, save_openai_key
 from .db import init_db
 from .paths import frontend_dist
-from .store import create_content, get_content, list_contents
+from .research import run_research
+from .store import create_content, get_content, list_contents, recover_research_runs
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    recover_research_runs()
     yield
 
 
@@ -34,7 +36,7 @@ def check_local_action(request: Request):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "app": "MoneyEngineV3", "phase": 1}
+    return {"status": "ok", "app": "MoneyEngineV3", "phase": 2}
 
 
 @app.post("/api/system/stop")
@@ -70,10 +72,12 @@ def clear_openai_key(request: Request):
 
 
 @app.post("/api/contents", status_code=201)
-def create(payload: ContentInput):
+def create(payload: ContentInput, background_tasks: BackgroundTasks):
     if not payload.input_source.strip():
         raise HTTPException(422, "소재를 입력해 주세요.")
-    return create_content(payload.input_source.strip())
+    saved = create_content(payload.input_source.strip())
+    background_tasks.add_task(run_research, saved["id"])
+    return saved
 
 
 @app.get("/api/contents")
@@ -87,6 +91,18 @@ def content(content_id: str):
     if result is None:
         raise HTTPException(404, "작업을 찾을 수 없습니다.")
     return result
+
+
+@app.post("/api/contents/{content_id}/research")
+def retry_research(content_id: str, request: Request, background_tasks: BackgroundTasks):
+    check_local_action(request)
+    saved = get_content(content_id)
+    if saved is None:
+        raise HTTPException(404, "작업을 찾을 수 없습니다.")
+    if saved["run"]["status"] == "RUNNING":
+        raise HTTPException(409, "조사가 이미 진행 중입니다.")
+    background_tasks.add_task(run_research, content_id)
+    return {"status": "queued"}
 
 
 FRONTEND_DIST = frontend_dist()

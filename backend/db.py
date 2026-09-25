@@ -95,9 +95,25 @@ CREATE TABLE IF NOT EXISTS images (
 );
 CREATE INDEX IF NOT EXISTS idx_contents_updated ON contents(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_runs_content ON pipeline_runs(content_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS research_results (
+    content_id TEXT PRIMARY KEY REFERENCES contents(id) ON DELETE CASCADE,
+    parsed_json TEXT NOT NULL DEFAULT '{}',
+    facts_json TEXT NOT NULL DEFAULT '{}',
+    summary_json TEXT NOT NULL DEFAULT '{}',
+    conflict INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
 """
 
 
 def init_db():
     with connection() as db:
         db.executescript(SCHEMA)
+        existing = {row["name"] for row in db.execute("PRAGMA table_info(sources)")}
+        for name, definition in {
+            "published_at": "TEXT", "source_rank": "INTEGER", "document_type": "TEXT",
+            "is_correction": "INTEGER NOT NULL DEFAULT 0", "extract_status": "TEXT",
+            "excerpt": "TEXT", "issuer": "TEXT",
+        }.items():
+            if name not in existing:
+                db.execute(f"ALTER TABLE sources ADD COLUMN {name} {definition}")

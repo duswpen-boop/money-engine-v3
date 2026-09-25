@@ -12,6 +12,9 @@ const STAGE_NAMES = {
 }
 
 const STATUS_NAMES = { PENDING: '대기', RUNNING: '진행 중', COMPLETED: '완료', FAILED: '실패' }
+const FACT_NAMES = { region: '지역', organization: '기관', program_name: '사업명', announcement_date: '발표일',
+  application_start: '신청 시작일', application_end: '신청 종료일', eligibility: '대상', amount_or_limit: '지원금/한도',
+  rate_or_interest: '지원율/금리', support_period: '지원기간', key_changes: '핵심 변경사항', application_method: '신청방법' }
 
 async function request(path, options) {
   const response = await fetch(`/api${path}`, options)
@@ -46,6 +49,13 @@ function App() {
     if (tab === 'SETTINGS') request('/settings').then(data => setKeyConfigured(data.openai_key_configured)).catch(e => setError(e.message))
   }, [tab])
 
+  useEffect(() => {
+    if (!item?.id || !['PENDING', 'RUNNING'].includes(item.run?.status)) return
+    const timer = window.setInterval(() => request(`/contents/${encodeURIComponent(item.id)}`)
+      .then(setItem).catch(e => setError(e.message)), 1500)
+    return () => window.clearInterval(timer)
+  }, [item?.id, item?.run?.status])
+
   async function openItem(id) {
     setError('')
     try {
@@ -70,6 +80,17 @@ function App() {
       window.history.replaceState(null, '', `?id=${encodeURIComponent(saved.id)}`)
     } catch (e) { setError(e.message) }
     finally { setBusy(false) }
+  }
+
+  async function retryResearch() {
+    if (!item) return
+    setError('')
+    try {
+      await request(`/contents/${encodeURIComponent(item.id)}/research`, {
+        method: 'POST', headers: { 'X-Money-Engine': 'local-ui' },
+      })
+      setItem(previous => ({ ...previous, run: { ...previous.run, status: 'RUNNING' } }))
+    } catch (e) { setError(e.message) }
   }
 
   function changeTab(next) {
@@ -134,23 +155,40 @@ function App() {
           <textarea aria-label="소재 입력" value={input} onChange={e => setInput(e.target.value)}
             placeholder={'[A급 신규]\n보은군 전기차 구매보조금 28대 추가\n10월 6일부터 신청...'} />
           <div className="actions"><button className="primary" disabled={busy} onClick={create}>{busy ? '작업 저장 중…' : '분석 및 콘텐츠 생성'}</button></div>
-          <p className="hint">PHASE 1: 입력과 작업 상태를 저장합니다. 실제 조사와 생성은 다음 단계에서 연결됩니다.</p>
+          <p className="hint">소재를 저장하면 공식자료 조사가 자동으로 시작됩니다. 본문·이미지 생성은 이후 단계에서 연결됩니다.</p>
         </section>
         {item && <section className="panel result-panel">
           <div className="section-heading"><h2>저장된 작업</h2><span className="pill">{item.status}</span></div>
           <h3>{item.title}</h3>
           <p className="muted">{new Date(item.created_at).toLocaleString('ko-KR')} · 작업 ID {item.id.slice(0, 8)}</p>
           <div className="progress"><div style={{ width: `${Math.round(item.steps.filter(s => s.status === 'COMPLETED').length / item.steps.length * 100)}%` }} /></div>
-          <p className="status-line">입력 저장 완료 · 조사 및 콘텐츠 생성 대기</p>
+          <p className="status-line">{item.run?.status === 'RUNNING' || item.run?.status === 'PENDING' ? '공식자료 조사 중…' :
+            item.run?.status === 'FAILED' ? '조사 실패 · 아래 단계의 안내를 확인하세요.' : 'Research 완료 · 본문 및 이미지 생성 대기'}</p>
+          {item.run?.status === 'FAILED' && <button className="stop-button" onClick={retryResearch}>Research 다시 시도</button>}
           <details><summary>Pipeline 단계별 상태</summary>
             <div className="steps">{item.steps.map(step => <div key={step.id} className="step">
               <span className={`dot ${step.status.toLowerCase()}`} />
               <span>{STAGE_NAMES[step.step] || step.step}</span>
-              <span className="step-status">{STATUS_NAMES[step.status]}</span>
+              <span className="step-status">{step.error && step.status === 'COMPLETED' ? '주의' : STATUS_NAMES[step.status]}</span>
+              {step.error && <span className="step-error">{step.error}</span>}
             </div>)}</div>
           </details>
+          {item.research && <details open><summary>Research 결과 · {item.research.conflict ? '충돌 확인 필요' : '공식자료 대조'}</summary>
+            <div className="research-facts">{Object.entries(FACT_NAMES).map(([key, label]) => {
+              const fact = item.research.facts?.[key]
+              return <div className="research-fact" key={key}><strong>{label}</strong><span>{fact?.value || '확인되지 않음'}</span>
+                <em>{fact?.status || 'UNKNOWN'}</em>{fact?.source_url && <a href={fact.source_url} target="_blank" rel="noreferrer">근거</a>}</div>
+            })}</div>
+            {item.research.summary?.official_url && <p className="muted">공식자료: <a href={item.research.summary.official_url} target="_blank" rel="noreferrer">원문 열기</a></p>}
+            {!!item.research.summary?.official_attachments?.length && <p className="muted">첨부자료: {item.research.summary.official_attachments.map((file, i) =>
+              <span key={file.url}><a href={file.url} target="_blank" rel="noreferrer">{file.type} {i + 1}</a> ({file.status}) </span>)}</p>}
+            {item.research.summary?.conflict_notes && <p className="error">{item.research.summary.conflict_notes}</p>}
+            {!!item.sources.length && <details><summary>조사 출처 {item.sources.length}개</summary>
+              {item.sources.map(source => <p key={source.id} className="muted"><a href={source.url} target="_blank" rel="noreferrer">{source.title || source.url}</a>
+                {' · '}{source.source_type}{' · '}{source.published_at || '날짜 미확인'}{' · '}{source.extract_status}</p>)}</details>}
+          </details>}
           <details><summary>저장된 원문 보기</summary><pre className="source-text">{item.input_source}</pre></details>
-          <p className="hint">이미지 {item.images.length}개가 독립 작업으로 준비되었습니다. 현재 상태: 대기.</p>
+          <p className="hint">본문·태그·이미지는 다음 단계에서 생성됩니다.</p>
         </section>}
       </>}
 
@@ -168,15 +206,15 @@ function App() {
       </>}
 
       {tab === 'SETTINGS' && <>
-        <section className="intro"><span className="eyebrow">CONFIGURATION</span><h1>설정</h1><p>외부 서비스 연결은 해당 단계에서 추가합니다.</p></section>
+        <section className="intro"><span className="eyebrow">CONFIGURATION</span><h1>설정</h1><p>웹 조사에 사용할 API 키를 설정합니다.</p></section>
         <section className="panel settings-panel"><h2>현재 구성</h2>
           <div><span>작업 저장</span><strong>SQLite · 로컬</strong></div>
           <div><span>기본 이미지</span><strong>3장 · 개별 상태 저장</strong></div>
-          <div><span>Research / Image</span><strong>연결 대기</strong></div>
+          <div><span>Research / Image</span><strong>Research 연결 · Image 대기</strong></div>
           <div><span>OpenAI API 키</span><strong>{keyConfigured ? '저장됨' : '미설정'}</strong></div>
           <div className="key-row"><input type="password" autoComplete="off" aria-label="OpenAI API 키" placeholder="API 키 입력" value={apiKey} onChange={e => setApiKey(e.target.value)} />
             <button onClick={saveKey}>저장</button>{keyConfigured && <button onClick={clearKey}>삭제</button>}</div>
-          <p className="hint">키는 Windows 사용자 계정에 연결해 암호화 저장하며 화면에 다시 표시하지 않습니다. PHASE 1에서는 아직 사용하지 않습니다.</p>
+          <p className="hint">키는 Windows 사용자 계정에 연결해 암호화 저장하며 화면에 다시 표시하지 않습니다. OpenAI API 웹 검색과 사실 분석에 사용합니다.</p>
           <button className="stop-button" onClick={stopApp}>프로그램 종료</button>
         </section>
       </>}
