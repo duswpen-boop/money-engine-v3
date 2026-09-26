@@ -174,7 +174,9 @@ async def fetch_document(client: httpx.AsyncClient, url: str, title: str = "") -
                 for node in soup(["script", "style", "nav", "footer"]):
                     node.decompose()
                 if not title or title == "입력 URL":
-                    title = soup.title.get_text(" ", strip=True) if soup.title else ""
+                    meta_title = soup.find("meta", attrs={"property": "og:title"})
+                    title = (soup.title.get_text(" ", strip=True) if soup.title else "") or (
+                        meta_title.get("content", "") if meta_title else "")
                 meta = soup.find("meta", attrs={"property": "article:published_time"})
                 published_at = meta.get("content") if meta else None
                 if not published_at:

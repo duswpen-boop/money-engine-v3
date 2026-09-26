@@ -163,14 +163,17 @@ def save_sources(content_id: str, sources: list[dict]):
         db.executemany(
             "INSERT INTO sources(id,content_id,url,title,source_type,checked_at,verification_status,"
             "published_at,source_rank,document_type,is_correction,extract_status,excerpt,issuer,"
-            "source_role,source_quality,relevance_score,rejection_reason) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "source_role,source_quality,relevance_score,rejection_reason,search_status,fetch_status,"
+            "parse_status,source_domain,source_snippet) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             [(doc["id"], content_id, doc["url"], doc.get("title"), doc.get("source_type"), now(),
               "VERIFIED" if doc.get("extract_status") == "OK" else "UNKNOWN", doc.get("published_at"),
               doc.get("source_rank"), doc.get("document_type"), int(doc.get("is_correction", False)),
               doc.get("extract_status"), doc.get("excerpt", "")[:24000], doc.get("issuer"),
               doc.get("source_role"), doc.get("source_quality"), doc.get("relevance_score"),
-              doc.get("rejection_reason")) for doc in sources],
+              doc.get("rejection_reason"), doc.get("search_status", "SEARCH_FOUND"),
+              doc.get("fetch_status"), doc.get("parse_status"), doc.get("source_domain"),
+              doc.get("source_snippet")) for doc in sources],
         )
 
 

@@ -159,13 +159,50 @@ async def run_research(content_id: str, *, llm=None, search=None, finish_run=Tru
                                                       search, fetch=fetch_document, retry=retry)
             save_sources(content_id, documents)
             save_output(content_id, "RESEARCH_DIAGNOSTICS", diagnostics)
-            warning = None if any(d.get("source_role", "EVIDENCE") == "EVIDENCE" and
-                                  d["extract_status"] == "OK" for d in documents) else "5개 검색 전략 후에도 읽을 수 있는 관련 공식자료를 찾지 못했습니다."
+            failure = diagnostics.get("failure_code")
+            warning = ("관련 공식자료를 찾았으나 원문을 읽지 못했습니다." if failure == "OFFICIAL_SOURCE_FOUND_BUT_FETCH_FAILED" else
+                       "관련 공식자료를 찾았으나 본문을 추출하지 못했습니다." if failure == "OFFICIAL_SOURCE_FOUND_BUT_PARSE_FAILED" else
+                       "공식 도메인을 확인하지 못했습니다." if failure == "OFFICIAL_DOMAIN_NOT_RESOLVED" else
+                       "5개 검색 전략 후에도 읽을 수 있는 관련 공식자료를 찾지 못했습니다." if failure else None)
             set_step(content_id, "DEEP_SOURCE", "COMPLETED", warning)
 
         current_step = "VERIFY"
         set_step(content_id, "VERIFY", "RUNNING")
-        facts, source_conflict, conflict_notes = await _verify_documents(parsed, documents, llm)
+        try:
+            facts, source_conflict, conflict_notes = await _verify_documents(parsed, documents, llm)
+        except Exception as exc:
+            failure = "SCHEMA_VALIDATION_FAILED" if "validation" in type(exc).__name__.lower() else "LLM_EXTRACTION_FAILED"
+            diagnostics["extraction_failure_reason"] = failure
+            for entry in diagnostics.get("accepted_sources", []):
+                if entry["role"] == "EVIDENCE" and entry["parse_status"] == "PARSE_SUCCESS":
+                    entry["fact_extraction_executed"] = True
+                    entry["extraction_failure_reason"] = failure
+            save_output(content_id, "RESEARCH_DIAGNOSTICS", diagnostics)
+            raise
+        usable = [d for d in documents if d.get("source_role", "EVIDENCE") == "EVIDENCE" and
+                  d.get("extract_status") == "OK" and d.get("source_rank", 9) <= 4]
+        selected = usable[:4]
+        selected += [d for d in usable if d.get("document_type") != "HTML" and d not in selected][:3]
+        selected_urls = {d["url"] for d in selected}
+        counts = {url: sum(fact.get("source_url") == url and fact.get("status") != "UNKNOWN"
+                           for fact in facts.values()) for url in selected_urls}
+        for entries in [diagnostics.get("accepted_sources", [])] + [row.get("accepted_sources", []) for row in diagnostics.get("queries", [])]:
+            for entry in entries:
+                url = entry["url"]
+                entry["fact_extraction_executed"] = url in selected_urls
+                entry["extracted_facts_count"] = counts.get(url, 0)
+                if entry["fetch_status"] == "FETCH_FAILED":
+                    entry["extraction_failure_reason"] = "FETCH_FAILED"
+                elif entry["parse_status"] == "PARSE_FAILED":
+                    entry["extraction_failure_reason"] = "EMPTY_CONTENT"
+                elif entry["role"] == "DISCOVERY":
+                    entry["extraction_failure_reason"] = "DISCOVERY_ONLY"
+                elif entry["parse_status"] == "PARSE_SUCCESS" and url not in selected_urls:
+                    entry["extraction_failure_reason"] = "NOT_SELECTED_SOURCE_LIMIT"
+                elif url in selected_urls and not counts.get(url):
+                    doc = next((d for d in usable if d["url"] == url), {})
+                    entry["extraction_failure_reason"] = "CONTENT_TOO_SHORT" if len(doc.get("excerpt", "")) < 100 else "NO_VERIFIED_FACTS"
+        save_output(content_id, "RESEARCH_DIAGNOSTICS", diagnostics)
         conflict = source_conflict or any(f["status"] == "CONFLICT" for f in facts.values())
         official = next((d["url"] for d in documents if d.get("source_role", "EVIDENCE") == "EVIDENCE"
                          and d["source_rank"] <= 4 and d["extract_status"] == "OK"), None)
@@ -176,6 +213,7 @@ async def run_research(content_id: str, *, llm=None, search=None, finish_run=Tru
             "source_conflict": source_conflict, "conflict_notes": conflict_notes,
             "search_summary": (diagnostics.get("discovery_bridge") or {}).get("title", ""),
             "recovery_used": bool(diagnostics.get("recovery_used")),
+            "source_discovery_status": diagnostics.get("failure_code"),
             "topic_identity": parsed["topic_identity"]}
         save_verified(content_id, facts, summary, conflict)
         set_step(content_id, "VERIFY", "COMPLETED", "공식자료가 충돌합니다. 확인 후 발행하세요." if conflict else warning)
