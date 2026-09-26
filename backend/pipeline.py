@@ -2,11 +2,13 @@
 
 import asyncio
 import logging
-import re
 from pathlib import Path
 
 from .content_engine import (cluster, duplicate_check, intent, keyword_map, search_demand,
                              serp_opportunity, tags, value_add, write_content)
+from .article_plan import make_article_plan
+from .gates import article_issues, research_gate
+from .image_planner import duplicate_image, image_scene_plan
 from .credentials import get_openai_key
 from .paths import images_dir
 from .providers import research_providers
@@ -16,33 +18,8 @@ from .research import run_research
 from .store import (add_usage, claim_research, get_content, save_output, set_run_status,
                     set_step, update_content, update_image)
 
-ROLES = ("COVER", "ACTION", "CONTEXT")
-SCENES = {
-    "전기차": ("Korean small town electric vehicle parking street", "Korean dealership electric vehicle handover", "Korean public electric charging station"),
-    "금융": ("Korean neighborhood retail shop exterior", "Korean small business owner checking a finance notebook at work", "Korean traditional market storefront"),
-    "주택": ("Korean apartment neighborhood exterior", "Korean family viewing an apartment hallway", "Korean residential street at afternoon"),
-}
-DEFAULT_SCENES = ("Korean neighborhood street related to this program", "Korean applicant performing the relevant everyday task", "Korean local community environment")
-
-
 def image_specs(content: dict) -> list[dict]:
-    facts = (content.get("research") or {}).get("facts") or {}
-    program = str(facts.get("program_name", {}).get("value") or "")
-    category = next((name for name in SCENES if name in program), None)
-    scenes = SCENES.get(category, DEFAULT_SCENES)
-    slug = (content.get("outputs", {}).get("KEYWORD_MAP") or {}).get("image_slug", "")
-    slug = re.sub(r"[^a-z0-9-]+", "-", str(slug).lower()).strip("-")[:70]
-    if not slug or slug in {"generated", "output", "imagegen"}:
-        slug = "money-engine-" + content["id"][:8]
-    headings = re.findall(r"(?m)^##\s+(.+)$", content.get("body") or "")
-    positions = ["본문 도입부 뒤", f"'{headings[0]}' 뒤" if headings else "첫 번째 본문 단락 뒤",
-                 f"'{headings[1]}' 뒤" if len(headings) > 1 else "본문 후반부"]
-    return [{"slot": n, "role": role, "scene": scenes[n - 1],
-             "filename": f"{slug}-{role.lower()}.webp", "insert_after": positions[n - 1],
-             "prompt": ("Photorealistic documentary photograph in Korea, 16:9 landscape, natural light, "
-                        + scenes[n - 1] + ". Everyday authentic details, candid composition. "
-                        "No writing, dates, grant amounts, logos, fake documents, graphic overlay or advertisement. ")}
-            for n, role in enumerate(ROLES, 1)]
+    return image_scene_plan(content)["images"]
 
 
 async def generate_image(content_id: str, slot: int, provider=None) -> bool:
@@ -53,6 +30,7 @@ async def generate_image(content_id: str, slot: int, provider=None) -> bool:
         raise ValueError("작업을 찾을 수 없습니다.")
     spec = image_specs(content)[slot - 1]
     path = images_dir() / content_id / spec["filename"]
+    candidate = path.with_name(path.stem + ".candidate.webp")
     update_image(content_id, slot, "RUNNING", prompt=spec["prompt"], scene=spec["scene"], error=None)
     try:
         if provider is None:
@@ -60,16 +38,33 @@ async def generate_image(content_id: str, slot: int, provider=None) -> bool:
             if not key:
                 raise RuntimeError("SETTINGS에서 OpenAI API 키를 저장하세요.")
             provider = OpenAIImage(key)
-        await provider.generate(spec["prompt"], str(path))
-        if not path.is_file() or path.stat().st_size < 100:
-            raise RuntimeError("생성된 이미지 파일을 확인할 수 없습니다.")
-        update_image(content_id, slot, "COMPLETED", filename=spec["filename"], file_path=str(path),
-                     insert_after=spec["insert_after"], error=None)
-        return True
+        for attempt in range(2):
+            prompt = spec["prompt"] + (" Previous image did not pass relevance or visual QA. Use a clearly different candid composition." if attempt else "")
+            await provider.generate(prompt, str(candidate))
+            if not candidate.is_file() or candidate.stat().st_size < 100:
+                raise RuntimeError("생성된 이미지 파일을 확인할 수 없습니다.")
+            others = [row["file_path"] for row in get_content(content_id)["images"]
+                      if row["slot"] != slot and row["status"] == "COMPLETED" and row.get("file_path")]
+            if duplicate_image(str(candidate), others):
+                assessment = {"passed": False, "reason": "다른 이미지와 장면이 중복됨"}
+            elif not hasattr(provider, "assess"):
+                assessment = {"passed": False, "reason": "이미지 시각 QA 공급자가 없음"}
+            else:
+                assessment = await provider.assess(str(candidate), spec)
+            save_output(content_id, f"IMAGE_QA_{slot}", {"attempt": attempt + 1, **assessment,
+                                                            "related_section": spec["related_section"]})
+            if assessment.get("passed"):
+                candidate.replace(path)
+                update_image(content_id, slot, "COMPLETED", filename=spec["filename"], file_path=str(path),
+                             insert_after=spec["insert_after"], error=None)
+                return True
+        raise RuntimeError("이미지 QA 실패: " + str(assessment.get("reason", "주제 관련성 부족")))
     except Exception as exc:
         logging.exception("Image %d failed for %s", slot, content_id)
         update_image(content_id, slot, "FAILED", error=str(exc)[:300])
         return False
+    finally:
+        candidate.unlink(missing_ok=True)
 
 
 async def finish_package(content_id: str):
@@ -77,7 +72,12 @@ async def finish_package(content_id: str):
     body, removed = sanitize_text(content.get("body") or "", content.get("research") or {})
     if body != content.get("body"):
         update_content(content_id, body=body)
-    issues = quality_issues(get_content(content_id), require_images=True) + removed
+    refreshed = get_content(content_id)
+    issues = quality_issues(refreshed, require_images=True) + article_issues(refreshed) + removed
+    if any(not refreshed["outputs"].get(f"IMAGE_QA_{slot}", {}).get("passed") for slot in range(1, 4)):
+        issues.append("이미지 시각 QA 미통과")
+    if research_gate(refreshed)["status"] == "CONTENT_BLOCKED":
+        issues.append("Research 핵심 사실 부족 또는 충돌")
     issues = list(dict.fromkeys(issues))
     decision = "REVIEW_REQUIRED" if issues else "PUBLISH_READY"
     update_content(content_id, publish_decision=decision, grade="B" if issues else "A")
@@ -112,6 +112,14 @@ async def run_pipeline(content_id: str, *, llm=None, search=None, image=None):
                 return
         elif not claim_research(content_id):
             return
+        content = get_content(content_id)
+        gate = research_gate(content)
+        save_output(content_id, "RESEARCH_GATE", gate)
+        if gate["status"] == "CONTENT_BLOCKED":
+            update_content(content_id, publish_decision="REVIEW_REQUIRED", grade="BLOCKED",
+                           body=None, meta_description=None, tags=[])
+            set_run_status(content_id, "COMPLETED")
+            return
         stages = ["SEARCH_DEMAND", "SERP", "SEARCH_INTENT", "DUPLICATE_CHECK", "KEYWORD_MAP",
                   "VALUE_ADD", "WRITE", "QUALITY_GATE", "TAG", "IMAGE", "FINAL_SANITIZE"]
         for current in stages:
@@ -136,16 +144,37 @@ async def run_pipeline(content_id: str, *, llm=None, search=None, image=None):
             elif current == "VALUE_ADD":
                 result = await value_add(content, outputs, llm)
             elif current == "WRITE":
+                plan = make_article_plan(content, outputs)
+                save_output(content_id, "ARTICLE_PLAN", plan)
+                if plan["status"] != "READY":
+                    update_content(content_id, publish_decision="REVIEW_REQUIRED", grade="BLOCKED", body=None,
+                                   meta_description=None, tags=[])
+                    save_output(content_id, "QUALITY_GATE", {"decision": "QUALITY_FAIL",
+                                                            "issues": ["본문에 필요한 근거 있는 H2가 부족합니다."]})
+                    set_step(content_id, "WRITE", "COMPLETED", "ARTICLE PLAN의 근거 부족")
+                    set_run_status(content_id, "COMPLETED")
+                    return
+                outputs["ARTICLE_PLAN"] = plan
                 result = await write_content(content, outputs, llm)
                 update_content(content_id, title=result["title"], body=result["body"],
                                meta_description=result["meta_description"])
             elif current == "QUALITY_GATE":
-                result = {"issues": quality_issues(content), "decision": "REVIEW_REQUIRED"}
+                value_issues = article_issues(content)
+                result = {"issues": quality_issues(content) + value_issues,
+                          "decision": "QUALITY_FAIL" if value_issues else "REVIEW_REQUIRED"}
+                if value_issues:
+                    update_content(content_id, publish_decision="REVIEW_REQUIRED", grade="QUALITY_FAIL",
+                                   body=None, meta_description=None, tags=[])
+                    save_output(content_id, current, result)
+                    set_step(content_id, current, "COMPLETED", "; ".join(value_issues)[:400])
+                    set_run_status(content_id, "COMPLETED")
+                    return
                 result["decision"] = "REVIEW_REQUIRED" if result["issues"] else "PUBLISH_READY"
             elif current == "TAG":
                 result = await tags(content, outputs, llm)
                 update_content(content_id, tags=result["tags"])
             elif current == "IMAGE":
+                save_output(content_id, "IMAGE_SCENE_PLAN", image_scene_plan(content))
                 if image is None:
                     key = get_openai_key()
                     if not key:

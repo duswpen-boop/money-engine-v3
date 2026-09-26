@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from .db import connection
 
 STEPS = [
-    "INPUT", "PARSE", "VERIFY", "DEEP_SOURCE", "SEARCH_DEMAND", "SERP",
+    "INPUT", "PARSE", "DEEP_SOURCE", "VERIFY", "SEARCH_DEMAND", "SERP",
     "SEARCH_INTENT", "DUPLICATE_CHECK", "KEYWORD_MAP", "VALUE_ADD",
     "WRITE", "QUALITY_GATE", "TAG", "IMAGE", "FINAL_SANITIZE", "FINAL_PACKAGE",
 ]
@@ -69,6 +69,7 @@ def get_content(content_id: str) -> dict | None:
         content["steps"] = [_dict(row) for row in db.execute(
             "SELECT * FROM pipeline_steps WHERE run_id=? ORDER BY rowid", (run["id"],)
         )] if run else []
+        content["steps"].sort(key=lambda item: STEPS.index(item["step"]) if item["step"] in STEPS else 999)
         content["run"] = run
         content["images"] = [_dict(row) for row in db.execute(
             "SELECT * FROM images WHERE content_id=? ORDER BY slot", (content_id,)

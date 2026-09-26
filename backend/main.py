@@ -114,6 +114,15 @@ def retry_research(content_id: str, request: Request, background_tasks: Backgrou
         raise HTTPException(404, "작업을 찾을 수 없습니다.")
     if saved["run"]["status"] == "RUNNING":
         raise HTTPException(409, "조사가 이미 진행 중입니다.")
+    gate = saved["outputs"].get("RESEARCH_GATE", {})
+    if gate.get("status") == "CONTENT_BLOCKED":
+        reset_from(content_id, "DEEP_SOURCE")
+        background_tasks.add_task(run_pipeline, content_id)
+        return {"status": "queued"}
+    if saved["outputs"].get("QUALITY_GATE", {}).get("decision") == "QUALITY_FAIL":
+        reset_from(content_id, "WRITE")
+        background_tasks.add_task(run_pipeline, content_id)
+        return {"status": "queued"}
     failed = next((step["step"] for step in saved["steps"] if step["status"] == "FAILED"), None)
     failed = failed or next((step["step"] for step in saved["steps"] if step["status"] == "PENDING"), None)
     if not failed:

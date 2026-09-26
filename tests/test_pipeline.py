@@ -62,8 +62,38 @@ class FakeImage:
             raise RuntimeError("이미지 공급자 오류")
         path = Path(output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        Image.new("RGB", (160, 90), "#779977").save(path, "WEBP")
+        colors = ("#779977", "#447799", "#aa8866", "#6677aa", "#aa6655")
+        Image.new("RGB", (160, 90), colors[(self.calls - 1) % len(colors)]).save(path, "WEBP")
         return str(path)
+
+    async def assess(self, image_path, spec):
+        return {"passed": True, "relevant": True, "readable_text": False, "distortion": False,
+                "advertising_look": False, "fake_documents_or_money": False, "reason": "relevant"}
+
+
+class RejectOnceImage(FakeImage):
+    def __init__(self):
+        super().__init__()
+        self.rejected = False
+
+    async def assess(self, image_path, spec):
+        if spec["slot"] == 2 and not self.rejected:
+            self.rejected = True
+            return {"passed": False, "reason": "wrong main subject"}
+        return await super().assess(image_path, spec)
+
+
+class GenericWriter(FakeLLM):
+    async def generate_structured(self, prompt, schema):
+        if "title_candidate" in schema["properties"]:
+            return {"title_candidate": "일반 안내", "meta_description": "확인 안내",
+                    "body": "# 정책\n## 누가 신청하나\n확인된 구체적 정보 없음\n## 어떻게 신청하나\n공식기관에서 확인하세요"}
+        return await super().generate_structured(prompt, schema)
+
+
+class NeverGenerate:
+    async def generate(self, prompt, output_path):
+        raise AssertionError("A low-value article must never request images")
 
 
 class FailWriteOnce(FakeLLM):
@@ -163,7 +193,9 @@ class PipelineTest(unittest.TestCase):
         asyncio.run(run_pipeline(self.id, llm=FakeLLM(), search=FakeSearch(), image=FakeImage()))
         result = get_content(self.id)
         self.assertEqual(result["publish_decision"], "REVIEW_REQUIRED")
-        self.assertTrue(any("충돌" in issue for issue in result["outputs"]["FINAL_PACKAGE"]["issues"]))
+        self.assertEqual(result["outputs"]["RESEARCH_GATE"]["status"], "CONTENT_BLOCKED")
+        self.assertTrue(any("충돌" in issue for issue in result["outputs"]["RESEARCH_GATE"]["reasons"]))
+        self.assertIsNone(result["body"])
 
     def test_publication_url_is_canonical_and_persisted(self):
         with TestClient(app) as client:
@@ -180,6 +212,23 @@ class PipelineTest(unittest.TestCase):
             content["research"]["facts"]["program_name"]["value"] = program
             outlines.append(asyncio.run(intent(content, {}, CategoryIntentLLM()))["h2_outline"])
         self.assertEqual(len({tuple(x) for x in outlines}), 3)
+
+    def test_one_image_qa_failure_regenerates_only_that_slot(self):
+        images = RejectOnceImage()
+        asyncio.run(run_pipeline(self.id, llm=FakeLLM(), search=FakeSearch(), image=images))
+        saved = get_content(self.id)
+        self.assertEqual(images.calls, 4)
+        self.assertEqual([row["status"] for row in saved["images"]], ["COMPLETED"] * 3)
+        self.assertEqual(saved["publish_decision"], "PUBLISH_READY")
+        self.assertEqual(saved["outputs"]["IMAGE_QA_2"]["attempt"], 2)
+
+    def test_generic_article_is_withheld_before_tag_and_image(self):
+        asyncio.run(run_pipeline(self.id, llm=GenericWriter(), search=FakeSearch(), image=NeverGenerate()))
+        saved = get_content(self.id)
+        self.assertEqual(saved["outputs"]["QUALITY_GATE"]["decision"], "QUALITY_FAIL")
+        self.assertIsNone(saved["body"])
+        self.assertEqual(saved["tags"], [])
+        self.assertTrue(all(row["status"] == "PENDING" for row in saved["images"]))
 
 
 if __name__ == "__main__":

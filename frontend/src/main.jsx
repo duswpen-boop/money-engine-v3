@@ -213,8 +213,13 @@ function App() {
           <p className="muted">{new Date(item.created_at).toLocaleString('ko-KR')} · 작업 ID {item.id.slice(0, 8)}</p>
           <div className="progress"><div style={{ width: `${Math.round(item.steps.filter(s => s.status === 'COMPLETED').length / item.steps.length * 100)}%` }} /></div>
           <p className="status-line">{item.run?.status === 'RUNNING' || item.run?.status === 'PENDING' ? '콘텐츠 생성 중…' :
+            item.outputs?.RESEARCH_GATE?.status === 'CONTENT_BLOCKED' ? '공식자료 확보 부족 — 본문/이미지 생성을 중단했습니다.' :
+            item.outputs?.QUALITY_GATE?.decision === 'QUALITY_FAIL' ? '본문의 검증 정보가 부족해 태그/이미지 생성을 중단했습니다.' :
             item.run?.status === 'FAILED' ? '작업 중단 · 아래 단계의 안내를 확인하세요.' : '발행 패키지 준비 완료'}</p>
-          {item.run?.status === 'FAILED' && <button className="stop-button" onClick={retryResearch}>실패 단계부터 다시 시도</button>}
+          {item.outputs?.RESEARCH_GATE?.status === 'CONTENT_BLOCKED' && item.run?.status !== 'RUNNING' &&
+            <p className="review-note">핵심 사실 검증률 {Math.round((item.outputs.RESEARCH_GATE.coverage || 0) * 100)}% · {item.outputs.RESEARCH_GATE.reasons?.join(' · ')}</p>}
+          {(item.run?.status === 'FAILED' || item.outputs?.RESEARCH_GATE?.status === 'CONTENT_BLOCKED' || item.outputs?.QUALITY_GATE?.decision === 'QUALITY_FAIL') && item.run?.status !== 'RUNNING' &&
+            <button className="stop-button" onClick={retryResearch}>{item.outputs?.RESEARCH_GATE?.status === 'CONTENT_BLOCKED' ? 'Research 다시 시도' : '실패 단계부터 다시 시도'}</button>}
           <details><summary>Pipeline 단계별 상태</summary>
             <div className="steps">{item.steps.map(step => <div key={step.id} className="step">
               <span className={`dot ${step.status.toLowerCase()}`} />

@@ -41,6 +41,7 @@ def _facts(content: dict) -> dict:
 
 def _compact(content: dict, outputs: dict, *stages: str) -> str:
     return json.dumps({"verified_facts": _facts(content),
+                       "topic_identity": ((content.get("research") or {}).get("parsed") or {}).get("topic_identity"),
                        "unknown_fields": [key for key, fact in (content.get("research") or {}).get("facts", {}).items()
                                           if fact.get("status") != "VERIFIED"],
                        "official_url": ((content.get("research") or {}).get("summary") or {}).get("official_url"),
@@ -126,7 +127,12 @@ async def keyword_map(content: dict, outputs: dict, llm) -> dict:
         "image_slug는 영문 소문자와 하이픈으로 2~7단어.\n"
         + _compact(content, outputs, "SEARCH_INTENT", "SERP"), KEYWORD_SCHEMA)
     clean = lambda xs, n: list(dict.fromkeys(str(x).strip()[:80] for x in xs if str(x).strip()))[:n]
-    return {"primary_keyword": str(result["primary_keyword"])[:90],
+    program = verified_values(content.get("research") or {}).get("program_name") or ""
+    region = verified_values(content.get("research") or {}).get("region") or ""
+    primary = str(result["primary_keyword"])[:90]
+    if program and program.replace(" ", "") not in primary.replace(" ", ""):
+        primary = f"{region} {program}".strip()[:90]
+    return {"primary_keyword": primary,
             "secondary_keywords": clean(result["secondary_keywords"], 7),
             "long_tail_keywords": clean(result["long_tail_keywords"], 12),
             "watch_queries": clean(result["watch_queries"], 12),
@@ -145,13 +151,14 @@ async def value_add(content: dict, outputs: dict, llm) -> dict:
 
 async def write_content(content: dict, outputs: dict, llm) -> dict:
     result = await llm.generate_structured(
-        "티스토리용 한국어 본문 Markdown을 작성하세요. H1, 자연스러운 lead, 핵심 요약, 표, 소재에 맞는 H2/H3, "
-        "공식 확인경로를 포함합니다. 소재별 구조는 h2_outline을 참고하되 고정 틀을 반복하지 마세요. "
+        "티스토리용 한국어 본문 Markdown을 작성하세요. H1, 자연스러운 lead, 핵심 정보, 공식 확인경로를 포함합니다. "
+        "ARTICLE_PLAN.sections의 H2만 쓰고 각 섹션에 지정된 VERIFIED fact의 구체적인 값을 명시하세요. "
+        "자료 없는 H2와 일반적인 조언은 만들지 마세요. "
         "오직 verified_facts의 사실만 확정적으로 쓰고 원문에 없는 날짜·한도·대상을 만들지 마세요. "
         "UNKNOWN 항목은 확정 문장을 만들지 마세요. 공식 URL은 주어진 것만 사용. "
         "meta_description은 본문과 별개 필드로, 본문에 Description:을 적지 마세요. "
-        "확인 가능한 내용이 적으면 짧게 쓰고 추측으로 채우지 마세요.\n"
-        + _compact(content, outputs, "SEARCH_INTENT", "KEYWORD_MAP", "VALUE_ADD", "SERP"), WRITE_SCHEMA)
+        "'확인된 구체적 정보 없음' 같은 UNKNOWN 문장으로 분량을 채우지 마세요.\n"
+        + _compact(content, outputs, "ARTICLE_PLAN", "KEYWORD_MAP", "VALUE_ADD"), WRITE_SCHEMA)
     body, removed = sanitize_text(result["body"], content.get("research") or {})
     return {"title": safe_title(content.get("research") or {}, outputs.get("KEYWORD_MAP", {}).get("primary_keyword", "")),
             "meta_description": re.sub(r"(?i)^(?:meta\s*)?description\s*:\s*", "", result["meta_description"]).strip()[:180],
