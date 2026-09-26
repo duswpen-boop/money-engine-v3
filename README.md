@@ -1,6 +1,6 @@
-# MONEY ENGINE V3.0 — PHASE 2
+# MONEY ENGINE V3.0
 
-Windows PC에서 로컬로 실행하는 콘텐츠 작업 앱입니다. 소재 입력 시 작업을 저장하고 OpenAI 웹 검색으로 공식자료를 찾은 뒤, 직접 읽은 근거로 사실별 VERIFIED/CONFLICT/UNKNOWN을 기록합니다. 본문·태그·이미지는 다음 단계까지 `PENDING`입니다.
+Windows PC에서 로컬로 실행하는 콘텐츠 작업 앱입니다. 소재 하나로 공식자료 조사, 사실 검증, 검색수요·의도 분석, 글·태그 생성, 실제 이미지 3장 및 발행 패키지까지 진행합니다. 공식 근거가 부족하면 `REVIEW_REQUIRED`로 표시합니다.
 
 ## 배포판 사용 (일반 사용자)
 
@@ -33,19 +33,22 @@ npm run dev
 
 브라우저에서 `http://127.0.0.1:5173`을 엽니다. 저장 데이터는 `data/money_engine.sqlite3`에 남습니다. 화면을 수정한 뒤 배포할 때는 `frontend`에서 `npm run build`를 실행합니다.
 
-## PHASE 1 확인
+## 사용
 
 1. CREATE에 소재를 붙여넣고 **분석 및 콘텐츠 생성**을 누릅니다.
-2. `입력 저장: 완료`와 Research 단계의 진행 상태를 확인합니다.
-3. CONTENT 목록에서 저장된 제목을 눌러 원문과 상태를 다시 엽니다.
-4. 서버를 재시작한 뒤에도 목록과 작업이 유지되는지 확인합니다.
+2. 단계별 진행 상태를 확인합니다. API 키가 없으면 SETTINGS에 키를 저장하고 **실패 단계부터 다시 시도**를 누릅니다.
+3. 제목·Meta·본문·태그를 복사하고 이미지별 다운로드 또는 다시 생성을 사용합니다. 일부 텍스트도 개별 수정할 수 있습니다.
+4. CONTENT 목록에서 저장된 제목을 눌러 결과를 다시 엽니다.
+5. 서버를 재시작한 뒤에도 목록과 작업이 유지되는지 확인합니다.
 
-## PHASE 2 Research 확인
+## 검증
 
 1. SETTINGS에 **OpenAI API 키**를 저장합니다. ChatGPT 로그인과 별도로 OpenAI API 이용 권한 및 비용이 필요합니다.
 2. CREATE에 보은·순천·춘천 공고 소재 중 하나를 붙여넣고 **분석 및 콘텐츠 생성**을 누릅니다.
 3. 소재 분석·공식자료·사실 검증의 상태가 진행 중에서 완료/주의로 바뀌는지 확인합니다.
 4. Research 결과에서 12개 사실, 공식 URL, 첨부자료 및 출처 날짜를 확인합니다. 직접 읽지 못한 근거는 UNKNOWN입니다.
-5. CONTENT에서 다시 열어 결과가 유지되는지 확인합니다. 실패했다면 같은 화면의 **Research 다시 시도**를 누릅니다.
+5. CONTENT에서 다시 열어 결과와 실제 이미지가 유지되는지 확인합니다. 실패 단계와 실패 이미지 한 장을 개별 재시도할 수 있습니다.
 
-`backend/providers/`에 OpenAI LLM·웹 검색 어댑터를 분리했습니다. 키는 Windows DPAPI로 저장되고 EXE에 포함되지 않습니다. PDF/HWP/HWPX/DOCX/XLSX는 자료 접근과 텍스트 추출이 가능한 경우 분석합니다. 접근 제한·스캔 이미지·읽기 실패 자료는 확인 불가로 처리합니다. 외부 API가 필요한 실제 검색은 Windows에서 API 키를 넣어 검증합니다.
+`backend/providers/`에 LLM·웹 검색·이미지 어댑터를 분리했습니다. 키는 Windows DPAPI로 저장되고 EXE에 포함되지 않습니다. PDF/HWP/HWPX/DOCX/XLSX는 자료 접근과 텍스트 추출이 가능한 경우 분석합니다. 접근 제한·스캔 이미지·읽기 실패 자료는 확인 불가로 처리합니다. 웹 검색 결과는 Google 순위나 정확한 월 검색량으로 표시하지 않습니다. 외부 API가 필요한 실제 검색·이미지 생성은 Windows에서 API 키를 넣어 검증해야 합니다.
+
+개발 검증: `python -m unittest discover -s tests -v`, `cd frontend && npm run build`. GitHub Actions는 같은 테스트 통과 후 EXE를 빌드하고 압축된 실행 파일을 smoke test합니다.

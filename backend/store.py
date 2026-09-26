@@ -82,8 +82,10 @@ def get_content(content_id: str) -> dict | None:
                 research[key.removesuffix("_json")] = json.loads(research.pop(key))
             research["conflict"] = bool(research["conflict"])
         content["research"] = research
-        for field in ("secondary_keywords", "watch_keywords", "tags"):
-            content[field] = json.loads(content[field])
+        content["outputs"] = {row["step"]: json.loads(row["result_json"]) for row in db.execute(
+            "SELECT step,result_json FROM pipeline_outputs WHERE content_id=?", (content_id,))}
+        for field in ("secondary_keywords", "watch_keywords", "tags", "cluster", "next_content"):
+            content[field] = json.loads(content[field]) if content[field] else None
         return content
 
 
@@ -110,7 +112,7 @@ def set_step(content_id: str, step: str, status: str, error: str | None = None):
             db.execute("UPDATE pipeline_runs SET status='RUNNING',updated_at=? WHERE id=?", (timestamp, run["id"]))
         elif status == "FAILED":
             db.execute("UPDATE pipeline_runs SET status='FAILED',updated_at=? WHERE id=?", (timestamp, run["id"]))
-        elif step == "VERIFY" and status == "COMPLETED":
+        elif step == "FINAL_PACKAGE" and status == "COMPLETED":
             db.execute("UPDATE pipeline_runs SET status='COMPLETED',updated_at=? WHERE id=?", (timestamp, run["id"]))
         db.execute("UPDATE contents SET updated_at=? WHERE id=?", (timestamp, content_id))
 
@@ -124,10 +126,25 @@ def claim_research(content_id: str) -> bool:
         return True
 
 
+def set_run_status(content_id: str, status: str):
+    with connection() as db:
+        db.execute("UPDATE pipeline_runs SET status=?,updated_at=? WHERE content_id=?",
+                   (status, now(), content_id))
+
+
+def add_usage(content_id: str, usage: dict):
+    with connection() as db:
+        db.execute("UPDATE pipeline_runs SET api_requests=api_requests+?,input_tokens=input_tokens+?,"
+                   "output_tokens=output_tokens+? WHERE content_id=?",
+                   (usage.get("api_requests", 0), usage.get("input_tokens", 0),
+                    usage.get("output_tokens", 0), content_id))
+
+
 def recover_research_runs():
     with connection() as db:
         db.execute("UPDATE pipeline_runs SET status='FAILED',updated_at=? WHERE status='RUNNING'", (now(),))
         db.execute("UPDATE pipeline_steps SET status='FAILED',error='프로그램이 종료되어 조사가 중단됐습니다. 다시 시도하세요.', updated_at=? WHERE status='RUNNING'", (now(),))
+        db.execute("UPDATE images SET status='FAILED',error='프로그램이 종료되어 이미지 생성이 중단됐습니다.',updated_at=? WHERE status='RUNNING'", (now(),))
 
 
 def save_parsed(content_id: str, parsed: dict):
@@ -156,6 +173,60 @@ def save_verified(content_id: str, facts: dict, summary: dict, conflict: bool):
     with connection() as db:
         db.execute("UPDATE research_results SET facts_json=?,summary_json=?,conflict=?,updated_at=? WHERE content_id=?",
                    (json.dumps(facts, ensure_ascii=False), json.dumps(summary, ensure_ascii=False), int(conflict), timestamp, content_id))
-        db.execute("UPDATE contents SET region=?,organization=?,program_name=?,updated_at=? WHERE id=?",
+        verified_region = facts.get("region", {}).get("value") if facts.get("region", {}).get("status") == "VERIFIED" else None
+        verified_program = facts.get("program_name", {}).get("value") if facts.get("program_name", {}).get("status") == "VERIFIED" else None
+        safe_title = " ".join(part for part in (verified_region, verified_program) if part).strip() or "소재 조사 결과"
+        if not verified_program:
+            safe_title += " · 확인 필요"
+        db.execute("UPDATE contents SET region=?,organization=?,program_name=?,title=?,updated_at=? WHERE id=?",
                    (facts.get("region", {}).get("value"), facts.get("organization", {}).get("value"),
-                    facts.get("program_name", {}).get("value"), timestamp, content_id))
+                    facts.get("program_name", {}).get("value"), safe_title, timestamp, content_id))
+
+
+def save_output(content_id: str, step: str, result: dict):
+    with connection() as db:
+        db.execute("INSERT INTO pipeline_outputs(content_id,step,result_json,updated_at) VALUES(?,?,?,?) "
+                   "ON CONFLICT(content_id,step) DO UPDATE SET result_json=excluded.result_json,updated_at=excluded.updated_at",
+                   (content_id, step, json.dumps(result, ensure_ascii=False), now()))
+
+
+CONTENT_FIELDS = {"title", "meta_description", "body", "tags", "primary_keyword",
+                  "secondary_keywords", "watch_keywords", "cluster", "next_content",
+                  "publish_decision", "grade", "status", "published_url"}
+
+
+def update_content(content_id: str, **values):
+    if not values.keys() <= CONTENT_FIELDS:
+        raise ValueError("허용되지 않은 필드입니다.")
+    values = {key: json.dumps(value, ensure_ascii=False) if key in
+              {"tags", "secondary_keywords", "watch_keywords", "cluster", "next_content"} else value
+              for key, value in values.items()}
+    with connection() as db:
+        db.execute("UPDATE contents SET " + ",".join(f"{key}=?" for key in values) + ",updated_at=? WHERE id=?",
+                   (*values.values(), now(), content_id))
+
+
+def reset_from(content_id: str, step: str):
+    if step not in STEPS:
+        raise ValueError("알 수 없는 단계입니다.")
+    downstream = STEPS[STEPS.index(step):]
+    with connection() as db:
+        run = db.execute("SELECT id FROM pipeline_runs WHERE content_id=? ORDER BY rowid DESC LIMIT 1",
+                         (content_id,)).fetchone()
+        if run is None:
+            raise ValueError("작업을 찾지 못했습니다.")
+        db.executemany("UPDATE pipeline_steps SET status='PENDING',error=NULL,updated_at=? WHERE run_id=? AND step=?",
+                       [(now(), run["id"], name) for name in downstream])
+        db.executemany("DELETE FROM pipeline_outputs WHERE content_id=? AND step=?",
+                       [(content_id, name) for name in downstream])
+        db.execute("UPDATE pipeline_runs SET status='PENDING',updated_at=? WHERE id=?", (now(), run["id"]))
+
+
+def update_image(content_id: str, slot: int, status: str, **values):
+    allowed = {"filename", "file_path", "insert_after", "prompt", "scene", "error"}
+    if not values.keys() <= allowed or slot not in range(1, 6):
+        raise ValueError("이미지 슬롯 또는 필드가 올바르지 않습니다.")
+    with connection() as db:
+        extra = "," + ",".join(f"{name}=?" for name in values) if values else ""
+        db.execute("UPDATE images SET status=?,updated_at=?,attempts=attempts+CASE WHEN status='RUNNING' THEN 0 ELSE ? END" + extra + " WHERE content_id=? AND slot=?",
+                   (status, now(), int(status == "RUNNING"), *values.values(), content_id, slot))

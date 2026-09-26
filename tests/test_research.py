@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from backend.db import init_db
 from backend.main import app
 from backend.research import FIELDS, run_research
+from backend.relevance import relevant_source
 from backend.research_sources import clean_url, extract_binary
 from backend.store import create_content, get_content
 
@@ -20,12 +21,12 @@ from backend.store import create_content, get_content
 class FakeLLM:
     async def generate_structured(self, prompt, schema):
         if "search_query" in schema["properties"]:
-            return {**{key: None for key in FIELDS}, "region": "보은군", "amount_or_limit": "3천만원",
+            return {**{key: None for key in FIELDS}, "region": "보은군", "program_name": "전기차 보조금", "amount_or_limit": "3천만원",
                     "search_query": "보은군 전기차 보조금 2026"}
         facts = {key: {"value": None, "status": "UNKNOWN", "source_url": None, "evidence": None}
                  for key in FIELDS}
         facts["region"] = {"value": "보은군", "status": "VERIFIED", "source_url": "https://boeun.go.kr/notice",
-                           "evidence": "보은군 공고"}
+                           "evidence": "보은군 전기차"}
         facts["amount_or_limit"] = {"value": "5천만원", "status": "CONFLICT", "source_url": "https://boeun.go.kr/correction",
                                    "evidence": "한도 5천만원"}
         facts["eligibility"] = {"value": "임의 작성", "status": "VERIFIED", "source_url": "https://boeun.go.kr/notice",
@@ -36,8 +37,8 @@ class FakeLLM:
 class FakeSearch:
     async def search(self, query):
         return {"text": "공식 공고 확인", "sources": [
-            {"url": "https://boeun.go.kr/notice?utm_source=chatgpt.com", "title": "보은군 공고"},
-            {"url": "https://boeun.go.kr/correction", "title": "보은군 정정공고"}]}
+            {"url": "https://boeun.go.kr/notice?utm_source=chatgpt.com", "title": "보은군 전기차 보조금 공고"},
+            {"url": "https://boeun.go.kr/correction", "title": "보은군 전기차 보조금 정정공고"}]}
 
 
 class VerifyOnlyLLM(FakeLLM):
@@ -56,7 +57,7 @@ async def fake_fetch(client, url, title):
     correction = "correction" in url
     return ({"url": url, "title": title, "source_type": "원발행기관 공식 공고", "source_rank": 0 if correction else 1,
              "is_correction": correction, "document_type": "HTML", "published_at": "2026-09-25" if correction else "2026-09-20",
-             "extract_status": "OK", "excerpt": "보은군 공고 한도 5천만원" if correction else "보은군 공고 한도 3천만원"}, [])
+             "extract_status": "OK", "excerpt": "보은군 전기차 보조금 공고 한도 5천만원" if correction else "보은군 전기차 보조금 공고 한도 3천만원"}, [])
 
 
 class ResearchTest(unittest.TestCase):
@@ -95,11 +96,19 @@ class ResearchTest(unittest.TestCase):
             self.assertEqual(saved["research"]["facts"]["eligibility"]["status"], "UNKNOWN")
             self.assertTrue(saved["research"]["conflict"])
             self.assertEqual(saved["research"]["summary"]["official_url"], "https://boeun.go.kr/correction")
+            self.assertNotIn("3천만원", saved["title"])
             self.assertEqual(len(saved["sources"]), 2)
             self.assertFalse(any("utm_source" in source["url"] for source in saved["sources"]))
             self.assertEqual(saved["steps"][4]["status"], "PENDING")
             asyncio.run(run_research(item["id"], llm=VerifyOnlyLLM(), search=NoSearch()))
             self.assertEqual(get_content(item["id"])["run"]["status"], "COMPLETED")
+
+    def test_unrelated_busan_education_notice_is_excluded(self):
+        parsed = {"region": "부산", "program_name": "동백전 가맹 소상공인 카드수수료 지원"}
+        self.assertFalse(relevant_source("부산시교육청 지방공무원 채용공고", "https://busan.go.kr/hiring",
+                                         "2026년 부산시교육청 채용 시험", parsed))
+        self.assertTrue(relevant_source("부산 동백전 카드수수료 지원 공고", "https://busan.go.kr/card",
+                                        "소상공인 카드 수수료", parsed))
 
     def test_docx_attachment_text_and_url_cleanup(self):
         output = io.BytesIO()

@@ -10,9 +10,10 @@ import httpx
 
 from .credentials import get_openai_key
 from .providers import research_providers
+from .relevance import relevant_source
 from .research_sources import clean_url, document_type, fetch_document, source_rank
 from .store import (claim_research, get_content, save_parsed, save_sources,
-                    save_verified, set_step)
+                    save_verified, set_step, set_run_status)
 
 FIELDS = (
     "region", "organization", "program_name", "announcement_date", "application_start",
@@ -72,7 +73,7 @@ def _valid_fact(raw: dict, input_value: str | None, documents: dict[str, dict]) 
             "source_url": url, "evidence": quote}
 
 
-async def run_research(content_id: str, *, llm=None, search=None):
+async def run_research(content_id: str, *, llm=None, search=None, finish_run=True):
     """Run after the create response; persist each finished stage independently."""
     if not claim_research(content_id):
         return
@@ -133,6 +134,8 @@ async def run_research(content_id: str, *, llm=None, search=None):
                 for url, title in ranked:
                     try:
                         doc, links = await asyncio.wait_for(fetch_document(client, url, title), timeout=35)
+                        if not relevant_source(doc["title"], doc["url"], doc["excerpt"], parsed):
+                            continue
                         if doc["url"] not in seen:
                             seen.add(doc["url"])
                             documents.append(doc)
@@ -140,7 +143,7 @@ async def run_research(content_id: str, *, llm=None, search=None):
                             attachments.extend(links)
                     except Exception as exc:
                         logging.info("Source could not be read: %s (%s)", url, type(exc).__name__)
-                        if url not in seen:
+                        if url not in seen and (url in pasted_urls or relevant_source(title, url, "", parsed)):
                             rank, kind, correction = source_rank(url, title)
                             seen.add(url)
                             documents.append({"url": url, "title": title, "source_type": kind,
@@ -206,6 +209,8 @@ async def run_research(content_id: str, *, llm=None, search=None):
             "search_summary": "\n".join(search_summaries)[:4000]}
         save_verified(content_id, facts, summary, conflict)
         set_step(content_id, "VERIFY", "COMPLETED", "공식자료가 충돌합니다. 확인 후 발행하세요." if conflict else warning)
+        if finish_run:
+            set_run_status(content_id, "COMPLETED")
     except Exception as exc:
         if isinstance(exc, RuntimeError) and "API 키" in str(exc):
             logging.warning("Research needs an API key for content %s", content_id)

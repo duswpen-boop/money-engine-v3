@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -6,9 +7,11 @@ from pydantic import BaseModel, Field
 
 from .credentials import delete_openai_key, has_openai_key, save_openai_key
 from .db import init_db
-from .paths import frontend_dist
-from .research import run_research
-from .store import create_content, get_content, list_contents, recover_research_runs
+from .editing import edit_part
+from .paths import frontend_dist, images_dir
+from .pipeline import regenerate_image, run_pipeline
+from .research_sources import clean_url
+from .store import create_content, get_content, list_contents, recover_research_runs, reset_from, update_image, update_content
 
 
 @asynccontextmanager
@@ -29,6 +32,16 @@ class ApiKeyInput(BaseModel):
     value: str = Field(min_length=1, max_length=500)
 
 
+class EditInput(BaseModel):
+    part: str
+    heading: str | None = None
+
+
+class PublishInput(BaseModel):
+    status: str
+    published_url: str | None = None
+
+
 def check_local_action(request: Request):
     if request.headers.get("X-Money-Engine") != "local-ui":
         raise HTTPException(403, "로컬 프로그램에서만 설정할 수 있습니다.")
@@ -36,7 +49,7 @@ def check_local_action(request: Request):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "app": "MoneyEngineV3", "phase": 2}
+    return {"status": "ok", "app": "MoneyEngineV3", "phase": 7}
 
 
 @app.post("/api/system/stop")
@@ -76,7 +89,7 @@ def create(payload: ContentInput, background_tasks: BackgroundTasks):
     if not payload.input_source.strip():
         raise HTTPException(422, "소재를 입력해 주세요.")
     saved = create_content(payload.input_source.strip())
-    background_tasks.add_task(run_research, saved["id"])
+    background_tasks.add_task(run_pipeline, saved["id"])
     return saved
 
 
@@ -101,8 +114,71 @@ def retry_research(content_id: str, request: Request, background_tasks: Backgrou
         raise HTTPException(404, "작업을 찾을 수 없습니다.")
     if saved["run"]["status"] == "RUNNING":
         raise HTTPException(409, "조사가 이미 진행 중입니다.")
-    background_tasks.add_task(run_research, content_id)
+    failed = next((step["step"] for step in saved["steps"] if step["status"] == "FAILED"), None)
+    failed = failed or next((step["step"] for step in saved["steps"] if step["status"] == "PENDING"), None)
+    if not failed:
+        raise HTTPException(409, "다시 실행할 실패 단계가 없습니다.")
+    reset_from(content_id, failed)
+    background_tasks.add_task(run_pipeline, content_id)
     return {"status": "queued"}
+
+
+@app.get("/api/contents/{content_id}/images/{slot}")
+def image_file(content_id: str, slot: int, download: bool = False):
+    saved = get_content(content_id)
+    if saved is None or slot not in range(1, 4):
+        raise HTTPException(404, "이미지를 찾을 수 없습니다.")
+    item = saved["images"][slot - 1]
+    if item["status"] != "COMPLETED" or not item["file_path"]:
+        raise HTTPException(404, "이미지가 아직 생성되지 않았습니다.")
+    path = Path(item["file_path"]).resolve()
+    if path.parent != (images_dir() / content_id).resolve() or not path.is_file():
+        raise HTTPException(404, "이미지 파일을 찾을 수 없습니다.")
+    return FileResponse(path, media_type="image/webp", filename=item["filename"] if download else None,
+                        content_disposition_type="attachment" if download else "inline")
+
+
+@app.post("/api/contents/{content_id}/images/{slot}/regenerate")
+def retry_image(content_id: str, slot: int, request: Request, background_tasks: BackgroundTasks):
+    check_local_action(request)
+    saved = get_content(content_id)
+    if saved is None or slot not in range(1, 4):
+        raise HTTPException(404, "이미지를 찾을 수 없습니다.")
+    if saved["run"]["status"] == "RUNNING" or saved["images"][slot - 1]["status"] == "RUNNING":
+        raise HTTPException(409, "이미지 작업이 진행 중입니다.")
+    if not saved["body"]:
+        raise HTTPException(409, "본문이 완성된 다음 생성할 수 있습니다.")
+    update_image(content_id, slot, "RUNNING")
+    background_tasks.add_task(regenerate_image, content_id, slot)
+    return {"status": "queued"}
+
+
+@app.post("/api/contents/{content_id}/edit")
+async def edit_content(content_id: str, payload: EditInput, request: Request):
+    check_local_action(request)
+    try:
+        return await edit_part(content_id, payload.part, payload.heading)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+@app.patch("/api/contents/{content_id}/publication")
+def update_publication(content_id: str, payload: PublishInput, request: Request):
+    check_local_action(request)
+    if get_content(content_id) is None:
+        raise HTTPException(404, "작업을 찾을 수 없습니다.")
+    if payload.status not in {"DRAFT", "ACTIVE", "CLOSED", "ARCHIVE", "UPDATE"}:
+        raise HTTPException(422, "콘텐츠 상태가 올바르지 않습니다.")
+    try:
+        url = clean_url(payload.published_url) if payload.published_url else None
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    if payload.status == "ACTIVE" and not url:
+        raise HTTPException(422, "발행한 글의 URL을 입력해 주세요.")
+    update_content(content_id, status=payload.status, published_url=url)
+    return get_content(content_id)
 
 
 FRONTEND_DIST = frontend_dist()

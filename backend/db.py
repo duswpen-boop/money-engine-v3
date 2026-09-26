@@ -103,6 +103,13 @@ CREATE TABLE IF NOT EXISTS research_results (
     conflict INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS pipeline_outputs (
+    content_id TEXT NOT NULL REFERENCES contents(id) ON DELETE CASCADE,
+    step TEXT NOT NULL,
+    result_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(content_id, step)
+);
 """
 
 
@@ -117,3 +124,11 @@ def init_db():
         }.items():
             if name not in existing:
                 db.execute(f"ALTER TABLE sources ADD COLUMN {name} {definition}")
+        image_columns = {row["name"] for row in db.execute("PRAGMA table_info(images)")}
+        for name in ("prompt", "scene"):
+            if name not in image_columns:
+                db.execute(f"ALTER TABLE images ADD COLUMN {name} TEXT")
+        run_columns = {row["name"] for row in db.execute("PRAGMA table_info(pipeline_runs)")}
+        for name in ("api_requests", "input_tokens", "output_tokens"):
+            if name not in run_columns:
+                db.execute(f"ALTER TABLE pipeline_runs ADD COLUMN {name} INTEGER NOT NULL DEFAULT 0")

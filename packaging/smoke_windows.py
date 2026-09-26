@@ -78,6 +78,12 @@ def main():
                 assert b"<html" in response.read().lower()
             created = request(url + "/api/contents", {"input_source": "보은 전기차 보조금"}, "POST")
             assert len(created["steps"]) == 16
+            for _ in range(50):
+                if request(url + "/api/contents/" + created["id"])["run"]["status"] == "FAILED":
+                    break
+                time.sleep(0.1)
+            else:
+                raise RuntimeError("Missing-key pipeline did not finish before key storage")
             assert (data / "money_engine.sqlite3").is_file()
             assert (logs / "money-engine.log").is_file()
             request(url + "/api/settings/openai-key", {"value": "test-key-only"}, "POST", local=True)
