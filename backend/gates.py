@@ -28,16 +28,41 @@ def research_gate(content: dict) -> dict:
     facts = research.get("facts") or {}
     values = verified_values(research)
     identity = (research.get("parsed") or {}).get("topic_identity") or {}
-    required = {"jurisdiction": ("region",), "organization": ("organization",),
-                "program_name": ("program_name",), "target": ("eligibility",),
-                "benefit": ("amount_or_limit", "key_changes"), "action": ("application_method",)}
-    seasonal = any(identity.get(key) for key in ("announcement_date", "application_start", "application_end"))
+    subject = " ".join(str(identity.get(key) or "") for key in ("program_name", "input_headline"))
+    if identity.get("subjects") or any(word in subject for word in ("전기차", "수소차")):
+        category = "SUBSIDY"
+        required = {"jurisdiction": ("region",), "organization": ("organization",),
+                    "program_name": ("program_name",), "target": ("eligibility",),
+                    "benefit": ("amount_or_limit", "quantity", "budget"), "action": ("application_method",)}
+    elif any(word in subject for word in ("세금", "세액", "과세")):
+        category = "TAX"
+        required = {"authority": ("organization",), "tax_type": ("program_name",),
+                    "target": ("eligibility",), "deadline": ("application_end",),
+                    "rule": ("rate_or_interest", "amount_or_limit", "key_changes"), "action": ("application_method",)}
+    elif any(word in subject for word in ("LH", "주택", "임대", "아파트")):
+        category = "HOUSING"
+        required = {"provider": ("organization",), "housing_type": ("program_name",),
+                    "location": ("region",), "target": ("eligibility",),
+                    "supply": ("quantity", "amount_or_limit"), "period": ("application_start", "application_end"),
+                    "action": ("application_method",)}
+    elif any(word in subject for word in ("융자", "대출", "육성자금", "금융지원")):
+        category = "FINANCE"
+        required = {"organization": ("organization",), "program_name": ("program_name",),
+                    "target": ("eligibility",), "limit": ("amount_or_limit",),
+                    "rate": ("rate_or_interest",), "period": ("support_period", "application_start", "application_end"),
+                    "action": ("application_method",)}
+    else:
+        category = "GENERAL"
+        required = {"jurisdiction": ("region",), "organization": ("organization",),
+                    "program_name": ("program_name",), "target": ("eligibility",),
+                    "benefit": ("amount_or_limit", "key_changes"), "action": ("application_method",)}
+    seasonal = identity.get("time_sensitive") or any(identity.get(key) for key in ("announcement_date", "application_start", "application_end"))
     if seasonal:
         required["date"] = ("announcement_date", "application_start", "application_end")
     covered = {name: next((field for field in fields if values.get(field)), None)
                for name, fields in required.items()}
     coverage = sum(bool(value) for value in covered.values()) / len(required)
-    critical_missing = [name for name in ("program_name", "target", "action", "date")
+    critical_missing = [name for name in ("program_name", "tax_type", "housing_type", "target", "action", "date", "deadline", "period")
                         if name in required and not covered[name]]
     conflict = research.get("conflict") or any(fact.get("status") == "CONFLICT" for fact in facts.values())
     drift = not identity_matches(identity, values)
@@ -52,7 +77,7 @@ def research_gate(content: dict) -> dict:
         reasons.append("입력 소재와 공식 사업명이 다름")
     if not official:
         reasons.append("읽을 수 있는 공식 원출처 없음")
-    return {"status": "CONTENT_BLOCKED" if blocked else "PASSED", "coverage": round(coverage, 3),
+    return {"status": "CONTENT_BLOCKED" if blocked else "PASSED", "coverage": round(coverage, 3), "category": category,
             "covered": covered, "required": list(required), "reasons": reasons,
             "message": BLOCK_MESSAGE if blocked else "Research 근거 충족"}
 

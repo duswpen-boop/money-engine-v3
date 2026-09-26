@@ -16,8 +16,10 @@ class OpenAIWebSearch:
             tools=[{"type": "web_search", "search_context_size": "medium"}],
             tool_choice="required",
             include=["web_search_call.action.sources"],
-            input=("한국의 최근 정책/공고를 조사합니다. 원발행기관 공고, 정정공고, 보도자료, 시행기관, "
-                   "첨부자료를 찾고 URL과 공표일을 명시하세요. 입력 주장이 사실인지 아직 단정하지 마세요.\n" + query),
+            input=("아래 검색어의 지역·정책 주제·행동·연도·숫자를 모두 유지해 해당 소재만 검색하세요. "
+                   "관련 없는 같은 지역의 다른 지원사업은 배제하세요. 최신 원발행기관 공고, 정정공고, "
+                   "보도자료와 첨부자료 URL을 우선 찾으세요. 뉴스는 공식 원문 탐색 힌트로 활용하세요. "
+                   "검색 결과를 찾지 못했다면 일반적인 정책으로 주제를 바꾸지 마세요.\n검색어: " + query),
         )
         self.usage["api_requests"] += 1
         if response.usage:

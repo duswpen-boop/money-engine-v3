@@ -133,8 +133,9 @@ class PipelineTest(unittest.TestCase):
         url = "https://suncheon.go.kr/notice"
         facts = {key: {"value": None, "input_value": None, "status": "UNKNOWN",
                        "source_url": None, "evidence": None} for key in FIELDS}
-        for key, value in {"region": "순천", "program_name": "소상공인 금융지원", "eligibility": "소상공인",
-                           "amount_or_limit": "5,000만원 융자", "application_method": "공식 창구"}.items():
+        for key, value in {"region": "순천", "organization": "순천시", "program_name": "소상공인 금융지원", "eligibility": "소상공인",
+                           "amount_or_limit": "5,000만원 융자", "rate_or_interest": "이차보전 2%",
+                           "support_period": "1년", "application_method": "공식 창구"}.items():
             facts[key].update(value=value, status="VERIFIED", source_url=url, evidence=value)
         facts["application_end"]["input_value"] = "10월 31일"
         save_verified(self.id, facts, {"official_url": url}, False)

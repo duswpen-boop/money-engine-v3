@@ -11,7 +11,7 @@ from .editing import edit_part
 from .paths import frontend_dist, images_dir
 from .pipeline import regenerate_image, run_pipeline
 from .research_sources import clean_url
-from .store import create_content, get_content, list_contents, recover_research_runs, reset_from, update_image, update_content
+from .store import create_content, get_content, list_contents, recover_research_runs, reset_from, save_output, update_image, update_content
 
 
 @asynccontextmanager
@@ -116,6 +116,17 @@ def retry_research(content_id: str, request: Request, background_tasks: Backgrou
         raise HTTPException(409, "조사가 이미 진행 중입니다.")
     gate = saved["outputs"].get("RESEARCH_GATE", {})
     if gate.get("status") == "CONTENT_BLOCKED":
+        prior = saved["outputs"].get("RESEARCH_DIAGNOSTICS") or {}
+        missing = [name for name, field in (gate.get("covered") or {}).items() if not field]
+        reasons = (["NO_OFFICIAL_SOURCE"] if not ((saved.get("research") or {}).get("summary") or {}).get("official_url") else [])
+        if prior.get("rejected_total") and not prior.get("official_domain_attempted"):
+            reasons.append("LOW_RELEVANCE")
+        reasons.extend("MISSING_" + name.upper() for name in missing)
+        save_output(content_id, "RESEARCH_RECOVERY", {
+            "missing": missing, "failure_reasons": reasons,
+            "previous_queries": [row["query"] for row in prior.get("queries", [])],
+            "attempt": (saved["outputs"].get("RESEARCH_RECOVERY") or {}).get("attempt", 0) + 1,
+        })
         reset_from(content_id, "DEEP_SOURCE")
         background_tasks.add_task(run_pipeline, content_id)
         return {"status": "queued"}

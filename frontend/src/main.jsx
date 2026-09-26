@@ -14,7 +14,10 @@ const STAGE_NAMES = {
 const STATUS_NAMES = { PENDING: '대기', RUNNING: '진행 중', COMPLETED: '완료', FAILED: '실패' }
 const FACT_NAMES = { region: '지역', organization: '기관', program_name: '사업명', announcement_date: '발표일',
   application_start: '신청 시작일', application_end: '신청 종료일', eligibility: '대상', amount_or_limit: '지원금/한도',
-  rate_or_interest: '지원율/금리', support_period: '지원기간', key_changes: '핵심 변경사항', application_method: '신청방법' }
+  rate_or_interest: '지원율/금리', support_period: '지원기간', key_changes: '핵심 변경사항', application_method: '신청방법',
+  benefit_type: '혜택 종류', quantity: '지원 물량', budget: '예산', residency_requirement: '거주 요건',
+  selection_method: '선정 방법', required_documents: '제출 서류', exclusions: '제외 대상', contact: '문의처',
+  changes_from_previous_round: '이전 공고와 변경점' }
 
 async function request(path, options) {
   const response = await fetch(`/api${path}`, options)
@@ -238,9 +241,14 @@ function App() {
             {!!item.research.summary?.official_attachments?.length && <p className="muted">첨부자료: {item.research.summary.official_attachments.map((file, i) =>
               <span key={file.url}><a href={file.url} target="_blank" rel="noreferrer">{file.type} {i + 1}</a> ({file.status}) </span>)}</p>}
             {item.research.summary?.conflict_notes && <p className="error">{item.research.summary.conflict_notes}</p>}
-            {!!item.sources.length && <details><summary>조사 출처 {item.sources.length}개</summary>
-              {item.sources.map(source => <p key={source.id} className="muted"><a href={source.url} target="_blank" rel="noreferrer">{source.title || source.url}</a>
-                {' · '}{source.source_type}{' · '}{source.published_at || '날짜 미확인'}{' · '}{source.extract_status}</p>)}</details>}
+            {!!item.sources?.filter(source => source.source_role !== 'REJECTED').length && <details><summary>조사 출처 {item.sources.filter(source => source.source_role !== 'REJECTED').length}개</summary>
+              {item.sources.filter(source => source.source_role !== 'REJECTED').map(source => <p key={source.id} className="muted"><a href={source.url} target="_blank" rel="noreferrer">{source.title || source.url}</a>
+                {' · '}{source.source_quality || 'OTHER'}{' · '}{source.source_role || 'EVIDENCE'}{' · '}{source.published_at || '날짜 미확인'}{' · '}{source.extract_status}</p>)}</details>}
+            {item.outputs?.RESEARCH_DIAGNOSTICS && <details><summary>검색 진단</summary>
+              <p className="muted">공식 도메인 탐색: {item.outputs.RESEARCH_DIAGNOSTICS.official_domain_attempted ? '실행' : '미실행'} · 첨부 탐색: {item.outputs.RESEARCH_DIAGNOSTICS.attachment_attempted ? '실행' : '미실행'} · Recovery: {item.outputs.RESEARCH_DIAGNOSTICS.recovery_used ? '실행' : '미실행'} · 제외한 출처: {item.outputs.RESEARCH_DIAGNOSTICS.rejected_total || 0}개</p>
+              {item.outputs.RESEARCH_DIAGNOSTICS.queries?.map((row, index) => <div key={index} className="diagnostic-row"><strong>{row.level}</strong><p>{row.query}</p><span>결과 {row.result_count} · 채택 {row.adopted} · 제외 {row.rejected}</span>
+                {row.official_domains?.length > 0 && <p className="muted">공식 도메인: {row.official_domains.join(', ')}</p>}
+                {row.rejection_reasons?.map((entry, n) => <p className="muted" key={n}>제외: {entry.title || '제목 없음'} · {entry.reason}</p>)}</div>)}</details>}
           </details>}
           <details><summary>저장된 원문 보기</summary><pre className="source-text">{item.input_source}</pre></details>
           {item.outputs?.FINAL_PACKAGE && <div className="package">
@@ -269,7 +277,7 @@ function App() {
               {item.cluster?.EXISTING?.map(entry => <p key={entry.id}>기존 글: <a href={entry.url} target="_blank" rel="noreferrer">{entry.url}</a></p>)}
               <p className="muted">다음 콘텐츠: {item.next_content || '추천 없음'}</p>
               <p className="muted">업데이트 확인일: {item.cluster?.update_date || '공식 확인 필요'} · 확장 조건: {item.cluster?.expand_trigger || '없음'}</p></div>
-            <div className="package-block"><h3>OFFICIAL SOURCES</h3>{item.sources?.filter(source => source.source_rank <= 4).map(source =>
+            <div className="package-block"><h3>OFFICIAL SOURCES</h3>{item.sources?.filter(source => source.source_rank <= 4 && source.source_role !== 'REJECTED' && source.extract_status === 'OK').map(source =>
               <p key={source.id}><a href={source.url} target="_blank" rel="noreferrer">{source.title || source.url}</a> · {source.checked_at?.slice(0, 10)} · {source.extract_status}</p>)}</div>
             <div className="package-block"><h3>SEARCH CONSOLE WATCH</h3><p>{item.watch_keywords?.join(' · ') || '관찰 키워드 없음'}</p></div>
             <div className="package-block"><h3>POST-PUBLISH</h3><p>{item.outputs.FINAL_PACKAGE.post_publish}</p></div>

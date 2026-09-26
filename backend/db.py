@@ -121,6 +121,8 @@ def init_db():
             "published_at": "TEXT", "source_rank": "INTEGER", "document_type": "TEXT",
             "is_correction": "INTEGER NOT NULL DEFAULT 0", "extract_status": "TEXT",
             "excerpt": "TEXT", "issuer": "TEXT",
+            "source_role": "TEXT", "source_quality": "TEXT", "relevance_score": "INTEGER",
+            "rejection_reason": "TEXT",
         }.items():
             if name not in existing:
                 db.execute(f"ALTER TABLE sources ADD COLUMN {name} {definition}")
